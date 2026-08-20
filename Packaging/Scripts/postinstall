@@ -1,0 +1,33 @@
+#!/bin/zsh
+
+set -euo pipefail
+
+helper="/Library/PrivilegedHelperTools/com.macpack.installer"
+plist="/Library/LaunchDaemons/com.macpack.installer.plist"
+app="/Applications/MacPack.app"
+label="system/com.macpack.installer"
+
+/usr/sbin/chown root:wheel "$helper" "$plist"
+/bin/chmod 0755 "$helper"
+/bin/chmod 0644 "$plist"
+/usr/bin/codesign --verify --strict --verbose=2 "$helper"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
+/usr/bin/plutil -lint "$plist"
+
+if ! /bin/launchctl print "$label" >/dev/null 2>&1; then
+    /bin/launchctl bootstrap system "$plist"
+fi
+/bin/launchctl enable "$label"
+
+lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"$lsregister" -f "$app"
+
+console_user=$(/usr/bin/stat -f '%Su' /dev/console)
+if [[ -n "$console_user" && "$console_user" != "root" && "$console_user" != "loginwindow" ]]; then
+    console_uid=$(/usr/bin/id -u "$console_user")
+    if ! /usr/bin/pgrep -u "$console_uid" -x MacPack >/dev/null 2>&1; then
+        /bin/launchctl asuser "$console_uid" /usr/bin/open -g "$app" --args --first-run --background
+    fi
+fi
+
+exit 0

@@ -1,0 +1,35 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Self-tests
+        run: swift run MacPackSelfTest
+
+      - name: Build app and installer package
+        env:
+          CODESIGN_IDENTITY: "-"
+        run: ./scripts/build-pkg.sh
+
+      - name: Verify app signature and package contents
+        run: |
+          codesign --verify --deep --strict --verbose=2 build/MacPack.app
+          pkgutil --payload-files dist/MacPack-0.1.0.pkg | grep 'Applications/MacPack.app/Contents/MacOS/MacPack'
+          pkgutil --payload-files dist/MacPack-0.1.0.pkg | grep 'Library/PrivilegedHelperTools/com.macpack.installer'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MacPack-unsigned
+          path: dist/MacPack-0.1.0.pkg
+          if-no-files-found: error
