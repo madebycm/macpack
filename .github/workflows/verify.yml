@@ -12,7 +12,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Self-tests
         run: swift run MacPackSelfTest
@@ -28,7 +28,7 @@ jobs:
           pkgutil --payload-files dist/MacPack-0.1.0.pkg | grep 'Applications/MacPack.app/Contents/MacOS/MacPack'
           pkgutil --payload-files dist/MacPack-0.1.0.pkg | grep 'Library/PrivilegedHelperTools/com.macpack.installer'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: MacPack-unsigned
           path: dist/MacPack-0.1.0.pkg
