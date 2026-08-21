@@ -3,6 +3,7 @@ import Foundation
 @objc public protocol MacPackProgressReporting {
     func installerDidUpdate(
         requestID: String,
+        stage: String,
         percent: Double,
         message: String
     )

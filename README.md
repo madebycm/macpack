@@ -28,8 +28,11 @@ To open the queue or change options later, open **MacPack** from `/Applications`
 - Transparently catches Finder package opens even though current macOS hard-locks those types to Installer.app.
 - Installs immediately by default; an optional confirmation mode is available.
 - Serializes every package into a persistent queue.
+- Lets you click any queued package to make it the next install without interrupting active work.
 - Shows parseable Installer progress when available and a calm indeterminate state otherwise.
 - Replaces existing payload files according to the package’s own rules—exactly as `/usr/sbin/installer` does.
+- Runs built-in post-install hooks before advancing the queue, including the bundled VST duplicate cleaner.
+- Preserves cleaned plug-ins for recovery instead of deleting them.
 - Starts the UI agent at login without a Dock or status-bar presence.
 - Keeps the root installer registered with launchd across boots, but launches it only on demand and exits it two seconds after the queue goes idle.
 - Survives app restarts by restoring unfinished queue entries.
@@ -47,6 +50,8 @@ hidden MacPack app observes → hides Installer → recovers every package path
 launchd root helper (on demand only)
         ↓ argv, never a shell
 /usr/sbin/installer -verboseR -pkg … -target /
+        ↓ only after a successful install
+signed, built-in post-install hooks → next queued package
 ```
 
 The initial MacPack package places a root-owned helper and launchd descriptor in macOS’s protected `/Library` locations. launchd holds the Mach-service registration across boots. The helper is therefore already privileged when MacPack requests an install, which removes the meaningless repeated authentication ceremony without caching credentials.
@@ -55,12 +60,24 @@ Since macOS 13.3, Finder intentionally refuses third-party default handlers for 
 
 The XPC service accepts only a client matching the MacPack app’s build-time designated code-signing requirement. Paths are sent as typed XPC arguments and passed to Installer as an argument array—never interpolated into a shell command.
 
+## Built-in VST cleanup
+
+After each successful package install, MacPack runs the same cleanup logic as the project’s canonical `vst` CLI alias. The exact source snapshot is vendored under `Resources/PostHooks/VSTCleanup` and covered by checksum and behavior tests. It includes the Ableton-aware AU/VST3 matching, `vsx` protection, Stellarizer/Glitchwork/Textureloom VST3 preference, FabFilter version and Mono/SC cases, conditional Revoice Pro legacy cleanup, Waves cleanup, and Max for Live `.adv` dedup. Slow broken-code-signature scanning remains off, matching the alias default.
+
+Fresh installs have one timing wrinkle: Ableton cannot index a plug-in before it exists. MacPack therefore reads the just-installed package’s BOM and bridges that indexing gap only when the package itself contains an exact same-stem AU+VST3 pair and the AU exists after installation. The canonical `NEVER_REMOVE` and `PREFER_VST3` exceptions still win. This lets a fresh package such as Lucid clean its VST3 immediately without weakening the cleaner’s global Ableton-aware sweep.
+
+Most moved items are recoverable from `~/Library/Application Support/MacPack/Cleaned Plugins`; Ableton-shadowed VST3 bundles keep the canonical alias destination `/usr/local/vst3-cleaned`. Full output from the latest run is written to `/Library/Logs/MacPack/vst-cleanup.log`.
+
+The hook also preserves the alias’s CrashReporter behavior: the login user’s `com.apple.CrashReporter DialogType` is set to `none`. Crash reports are still written normally.
+
+Hooks are code-controlled product extensions, not user commands. There is intentionally no hook editor or arbitrary-command preference. Contributors can add a typed runner and signed manifest entry; see [Architecture](docs/ARCHITECTURE.md#post-install-hooks).
+
 See [Architecture](docs/ARCHITECTURE.md) for the platform decisions and Apple references.
 
 ## Preferences
 
 - **Install immediately** — enabled by default. Disable it to hold new packages until you click Install.
-- **Corner progress** — show or hide the 300 × 58 pt floating progress panel.
+- **Corner progress** — show or hide the minimal 218 × 40 pt floating progress panel.
 - **Start at login** — uses `SMAppService.mainApp`; MacPack remains an accessory app with no Dock/menu-bar item.
 - **Finder routing** — verify that the hidden package-open interceptor is ready.
 - **Installer service** — verify the installed service or register the modern embedded daemon when using a drag-installed, notarized build.
@@ -71,6 +88,8 @@ Requirements: macOS 13+, Swift 6 toolchain, and Command Line Tools.
 
 ```bash
 swift run MacPackSelfTest
+python3 SelfTests/test_vst_hook.py
+(cd Resources/PostHooks/VSTCleanup && shasum -a 256 -c SNAPSHOT.sha256)
 ./scripts/build-app.sh --production
 ./scripts/build-pkg.sh --skip-build
 ```

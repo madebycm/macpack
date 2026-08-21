@@ -67,7 +67,7 @@ final class MacPackModel: ObservableObject {
 
         jobs = store.load().map { job in
             var recovered = job
-            if recovered.status == .installing {
+            if recovered.status == .installing || recovered.status == .postProcessing {
                 recovered.status = .queued
                 recovered.progress = nil
                 recovered.message = "Recovered after restart"
@@ -77,7 +77,9 @@ final class MacPackModel: ObservableObject {
     }
 
     var activeJob: InstallJob? {
-        jobs.first(where: { $0.status == .installing })
+        jobs.first(where: {
+            $0.status == .installing || $0.status == .postProcessing
+        })
     }
 
     var hudJob: InstallJob? {
@@ -143,6 +145,25 @@ final class MacPackModel: ObservableObject {
               jobs[index].status == .waiting else { return }
         jobs[index].status = .queued
         jobs[index].message = "Queued"
+        persist()
+        showHUDNow()
+        startNextIfPossible()
+    }
+
+    func prioritize(_ id: UUID) {
+        guard let currentIndex = jobs.firstIndex(where: { $0.id == id }),
+              jobs[currentIndex].status == .queued else { return }
+
+        for index in jobs.indices
+        where jobs[index].status == .queued && jobs[index].message == "Up next" {
+            jobs[index].message = "Queued"
+        }
+
+        var promoted = jobs.remove(at: currentIndex)
+        promoted.message = "Up next"
+        let insertionIndex = jobs.firstIndex(where: { $0.status == .queued })
+            ?? jobs.endIndex
+        jobs.insert(promoted, at: insertionIndex)
         persist()
         showHUDNow()
         startNextIfPossible()
@@ -285,8 +306,13 @@ final class MacPackModel: ObservableObject {
 
         helperClient.install(
             job: job,
-            progress: { [weak self] percent, message in
-                self?.updateProgress(id: id, percent: percent, message: message)
+            progress: { [weak self] stage, percent, message in
+                self?.updateProgress(
+                    id: id,
+                    stage: stage,
+                    percent: percent,
+                    message: message
+                )
             },
             completion: { [weak self] exitCode, summary in
                 self?.finish(id: id, exitCode: exitCode, summary: summary)
@@ -337,9 +363,22 @@ final class MacPackModel: ObservableObject {
         }
     }
 
-    private func updateProgress(id: UUID, percent: Double?, message: String?) {
+    private func updateProgress(
+        id: UUID,
+        stage: String,
+        percent: Double?,
+        message: String?
+    ) {
         guard let index = jobs.firstIndex(where: { $0.id == id }),
-              jobs[index].status == .installing else { return }
+              jobs[index].status == .installing
+                || jobs[index].status == .postProcessing else { return }
+
+        if stage == MacPackInstallStage.postProcessing {
+            jobs[index].status = .postProcessing
+            jobs[index].progress = nil
+        } else if jobs[index].status != .postProcessing {
+            jobs[index].status = .installing
+        }
         if let percent {
             jobs[index].progress = percent
         }
@@ -354,7 +393,7 @@ final class MacPackModel: ObservableObject {
         if exitCode == 0 {
             jobs[index].status = .installed
             jobs[index].progress = 1
-            jobs[index].message = "Installed"
+            jobs[index].message = summary.isEmpty ? "Installed" : summary
             let stagedPath = jobs[index].path
             if stagingStore.contains(stagedPath) {
                 stagingQueue.async { [stagingStore] in

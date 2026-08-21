@@ -45,6 +45,7 @@ A Foundation-only launch daemon that:
 - validates an absolute, existing `.pkg` or `.mpkg` path;
 - invokes `/usr/sbin/installer` directly with an argument array;
 - streams structured phase and percentage events back over bidirectional XPC;
+- executes code-controlled post-install hooks after Installer exits successfully;
 - exits two seconds after outstanding work completes.
 
 Apple documents privileged Mach connections through [`NSXPCConnection.Options.privileged`](https://developer.apple.com/documentation/foundation/nsxpcconnection/options/privileged) and peer restriction through [`setCodeSigningRequirement`](https://developer.apple.com/documentation/foundation/nsxpcconnection/setcodesigningrequirement%28_%3A%29).
@@ -59,6 +60,18 @@ MacPack supports both current distribution shapes because they have different co
 `SMAppService` is Apple’s macOS 13+ replacement for `SMJobBless`; its [`register()` documentation](https://developer.apple.com/documentation/servicemanagement/smappservice/register%28%29) confirms that a daemon is bootstrapped at each boot only after administrator approval. MacPack does not use deprecated `AuthorizationExecuteWithPrivileges`, deprecated `SMJobBless`, a setuid executable, or sudoers modification.
 
 The installed job is demand-driven through `MachServices`; it has neither `KeepAlive` nor `RunAtLoad`. launchd retains registration, not a resident root process.
+
+## Post-install hooks
+
+Post-install hooks are a product extension point, not a general automation surface. `Resources/PostHooks/hooks.json` declares built-in hooks using a versioned manifest. The helper accepts only known runner enum values, validates identifiers and relative entrypoints, and recursively rejects resources that are symlinks, non-root-owned, or group/world-writable before executing anything. There is no XPC method or UI for adding a command.
+
+The first built-in hook vendors the canonical `vst_cleaner.py` and its imported `specifics` modules byte-for-byte. `SNAPSHOT.sha256` makes source drift explicit, while `scripts/sync-vst-hook.sh` provides a narrow update path that never copies the alias’s password cache. A small adapter supplies the login user’s home and recovery directory, bypasses the cleaner’s interactive sudo/cache path because the helper is already root, and runs the unchanged Python 3.10-oriented source through a temporary postponed-annotation compatibility layer on Apple’s Python 3.9. `PYTHONDONTWRITEBYTECODE=1` prevents Python from modifying signed app resources.
+
+The VST cleanup runs with its normal defaults: Waves and Max for Live cleanup enabled, broken-code-signature scanning disabled. Immediately after a new install, Ableton’s database can legitimately lag behind the filesystem. The adapter handles that narrow case by reading only BOM entries from the installed package and moving a remaining VST3 only when that same package declared an exact same-stem AU+VST3 pair, the AU now exists on disk, and neither `NEVER_REMOVE` nor `PREFER_VST3` applies. The unchanged canonical cleaner still owns every global cleanup decision.
+
+Most moved items go to `~/Library/Application Support/MacPack/Cleaned Plugins`; Ableton-shadowed VST3 bundles retain the cleaner’s `/usr/local/vst3-cleaned` destination. The adapter applies the cleaner’s CrashReporter preference to the connecting login user rather than root. Output is capped in memory and recorded at `/Library/Logs/MacPack/vst-cleanup.log`.
+
+Hook completion is part of the serial queue. A hook timeout or failure is reported as a warning on the successful install and does not falsely change `/usr/sbin/installer`’s result or attempt a package rollback.
 
 ## Package types
 
@@ -75,10 +88,12 @@ MacPack declares all three as separate document types because the first two are 
 The user app is the only queue owner and issues one XPC install at a time. An item transitions through:
 
 ```text
-staging → waiting (optional confirmation) | queued → installing → installed | failed
+staging → waiting (optional confirmation) | queued → installing → post-processing → installed | failed
 ```
 
-An app restart recovers `installing` as `queued`. A helper disconnect is a normal failed state, never an implicit fallback to `sudo`. The UI stays visible for failures and offers an explicit retry.
+An app restart recovers `installing` or `post-processing` as `queued`. A helper disconnect is a normal failed state, never an implicit fallback to `sudo`. The UI stays visible for failures and offers an explicit retry.
+
+Clicking a queued row moves that item ahead of the other queued jobs. The active install and post-hook are never interrupted.
 
 Installer percentage output is optional. Missing progress produces an indeterminate bar rather than invented progress. Successful exit status is the source of truth; `/var/log/install.log` remains macOS’s detailed audit log.
 

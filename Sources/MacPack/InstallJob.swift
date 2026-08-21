@@ -5,6 +5,7 @@ enum InstallJobStatus: String, Codable, CaseIterable {
     case waiting
     case queued
     case installing
+    case postProcessing
     case installed
     case failed
     case cancelled
@@ -15,6 +16,7 @@ enum InstallJobStatus: String, Codable, CaseIterable {
         case .waiting: return "Waiting"
         case .queued: return "Queued"
         case .installing: return "Installing"
+        case .postProcessing: return "Cleaning up"
         case .installed: return "Installed"
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
@@ -22,7 +24,11 @@ enum InstallJobStatus: String, Codable, CaseIterable {
     }
 
     var isPending: Bool {
-        self == .staging || self == .waiting || self == .queued || self == .installing
+        self == .staging
+            || self == .waiting
+            || self == .queued
+            || self == .installing
+            || self == .postProcessing
     }
 
     var isFinished: Bool {

@@ -35,7 +35,8 @@ let package = Package(
         .executableTarget(
             name: "MacPackSelfTest",
             dependencies: ["MacPackShared"],
-            path: "SelfTests"
+            path: "SelfTests",
+            exclude: ["test_vst_hook.py"]
         )
     ],
     swiftLanguageModes: [.v5]

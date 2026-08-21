@@ -2,7 +2,11 @@ import Foundation
 import MacPackShared
 
 final class HelperClient {
-    typealias ProgressHandler = (_ percent: Double?, _ message: String?) -> Void
+    typealias ProgressHandler = (
+        _ stage: String,
+        _ percent: Double?,
+        _ message: String?
+    ) -> Void
     typealias CompletionHandler = (_ exitCode: Int, _ summary: String) -> Void
 
     private var activeRequest: ActiveRequest?
@@ -130,10 +134,19 @@ private final class ProgressReceiver: NSObject, MacPackProgressReporting {
         self.handler = handler
     }
 
-    func installerDidUpdate(requestID: String, percent: Double, message: String) {
+    func installerDidUpdate(
+        requestID: String,
+        stage: String,
+        percent: Double,
+        message: String
+    ) {
         guard requestID == self.requestID else { return }
         DispatchQueue.main.async { [handler] in
-            handler(percent >= 0 ? percent : nil, message.isEmpty ? nil : message)
+            handler(
+                stage,
+                percent >= 0 ? percent : nil,
+                message.isEmpty ? nil : message
+            )
         }
     }
 }

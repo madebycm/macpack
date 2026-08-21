@@ -22,6 +22,7 @@ final class InstallerService: NSObject, MacPackInstalling {
         withReply reply: @escaping (Int, String) -> Void
     ) {
         let connection = NSXPCConnection.current()
+        let userContext = connection.flatMap { PostInstallUserContext(connection: $0) }
         let reporter = connection?.remoteObjectProxyWithErrorHandler { _ in }
             as? MacPackProgressReporting
 
@@ -29,6 +30,7 @@ final class InstallerService: NSObject, MacPackInstalling {
         Self.installQueue.async {
             reporter?.installerDidUpdate(
                 requestID: requestID,
+                stage: MacPackInstallStage.installing,
                 percent: -1,
                 message: "Preparing…"
             )
@@ -36,12 +38,33 @@ final class InstallerService: NSObject, MacPackInstalling {
             let result = InstallerRunner.run(packagePath: path) { event in
                 reporter?.installerDidUpdate(
                     requestID: requestID,
+                    stage: MacPackInstallStage.installing,
                     percent: event.percent ?? -1,
                     message: event.message ?? ""
                 )
             }
 
-            reply(result.exitCode, result.summary)
+            guard result.exitCode == 0 else {
+                reply(result.exitCode, result.summary)
+                connection?.scheduleSendBarrierBlock {
+                    HelperLifecycle.shared.finishInstall()
+                }
+                return
+            }
+
+            let summary = PostInstallHookRunner.runAfterSuccessfulInstall(
+                packagePath: path,
+                userContext: userContext
+            ) { message in
+                reporter?.installerDidUpdate(
+                    requestID: requestID,
+                    stage: MacPackInstallStage.postProcessing,
+                    percent: -1,
+                    message: message
+                )
+            }
+
+            reply(Int(EXIT_SUCCESS), summary)
             connection?.scheduleSendBarrierBlock {
                 HelperLifecycle.shared.finishInstall()
             }

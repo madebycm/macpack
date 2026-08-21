@@ -15,7 +15,11 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Self-tests
-        run: swift run MacPackSelfTest
+        run: |
+          swift run MacPackSelfTest
+          python3 SelfTests/test_vst_hook.py
+          cd Resources/PostHooks/VSTCleanup
+          shasum -a 256 -c SNAPSHOT.sha256
 
       - name: Build app and installer package
         env:
@@ -26,6 +30,7 @@ jobs:
         run: |
           codesign --verify --deep --strict --verbose=2 build/MacPack.app
           pkgutil --payload-files dist/MacPack-0.1.0.pkg | grep 'Applications/MacPack.app/Contents/MacOS/MacPack'
+          pkgutil --payload-files dist/MacPack-0.1.0.pkg | grep 'Applications/MacPack.app/Contents/Resources/PostHooks/hooks.json'
           pkgutil --payload-files dist/MacPack-0.1.0.pkg | grep 'Library/PrivilegedHelperTools/com.macpack.installer'
 
       - uses: actions/upload-artifact@v6
