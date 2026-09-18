@@ -17,6 +17,7 @@ final class InstallerInterceptor {
     private let stateLock = NSLock()
     private var observerTokens: [NSObjectProtocol] = []
     private var inspectingPIDs = Set<pid_t>()
+    private var bypassedPaths = Set<String>()
     private let onPackages: ([URL]) -> Void
 
     init(onPackages: @escaping ([URL]) -> Void) {
@@ -25,6 +26,17 @@ final class InstallerInterceptor {
 
     deinit {
         stop()
+    }
+
+    /// Lets the next Installer launch for this exact package path proceed
+    /// untouched. Used when a staged copy failed and the package was handed
+    /// back to Installer.app, so the reopened Installer is not intercepted
+    /// into the same failing staging attempt again. The bypass is consumed
+    /// by one matching inspection, so a later manual open is handled normally.
+    func bypass(path: String) {
+        stateLock.lock()
+        bypassedPaths.insert(path)
+        stateLock.unlock()
     }
 
     func start() {
@@ -65,6 +77,7 @@ final class InstallerInterceptor {
         inspectionQueue.async { [weak self] in
             guard let self else { return }
             let paths = findPackagePaths(processID: pid)
+            let deferToInstaller = shouldDeferToInstaller(paths: paths)
 
             stateLock.lock()
             inspectingPIDs.remove(pid)
@@ -72,7 +85,7 @@ final class InstallerInterceptor {
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                if paths.isEmpty {
+                if paths.isEmpty || deferToInstaller {
                     if !app.isTerminated { _ = app.unhide() }
                     return
                 }
@@ -113,6 +126,26 @@ final class InstallerInterceptor {
         }
 
         return discovered.sorted()
+    }
+
+    /// Decides whether Installer must keep these packages instead of MacPack
+    /// taking over. Two cases: the package was explicitly bypassed because a
+    /// staging failure already handed it back once, or it sits inside another
+    /// sandboxed app's container, which macOS app-data protection makes
+    /// unreadable to MacPack — intercepting it would only kill the hosting
+    /// app's own update flow.
+    private func shouldDeferToInstaller(paths: [String]) -> Bool {
+        guard !paths.isEmpty else { return false }
+
+        stateLock.lock()
+        let bypassed = paths.allSatisfy { bypassedPaths.contains($0) }
+        if bypassed {
+            paths.forEach { bypassedPaths.remove($0) }
+        }
+        stateLock.unlock()
+        if bypassed { return true }
+
+        return paths.contains { PackageOrigin.isInsideForeignAppContainer($0) }
     }
 
     private func openFilePaths(processID: pid_t) -> [String] {

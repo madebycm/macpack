@@ -101,6 +101,30 @@ public enum PackagePathValidator {
     }
 }
 
+public enum PackageOrigin {
+    /// True when the package lives inside another sandboxed app's container.
+    /// Sandboxed auto-updaters (e.g. Shottr) download update packages into
+    /// their own container and open them from there. macOS app-data
+    /// protection denies MacPack reading another app's container even though
+    /// the POSIX owner matches, so intercepting those packages only kills
+    /// the updater's Installer without MacPack being able to stage them.
+    /// MacPack is not sandboxed and has no container of its own, so every
+    /// container path is foreign to it.
+    public static func isInsideForeignAppContainer(
+        _ path: String,
+        homeDirectory: String = NSHomeDirectory()
+    ) -> Bool {
+        let home = homeDirectory.hasSuffix("/")
+            ? String(homeDirectory.dropLast())
+            : homeDirectory
+        let containerRoots = [
+            "\(home)/Library/Containers/",
+            "\(home)/Library/Group Containers/"
+        ]
+        return containerRoots.contains { path.hasPrefix($0) }
+    }
+}
+
 public enum OpenPackagePath {
     public static func root(
         from openPath: String,

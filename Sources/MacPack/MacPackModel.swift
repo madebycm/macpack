@@ -43,6 +43,10 @@ final class MacPackModel: ObservableObject {
     @Published private(set) var notice: String?
 
     var onNeedsAttention: (() -> Void)?
+    /// Called when a freshly routed package cannot be staged, so the caller
+    /// can hand the original file back to Installer.app instead of silently
+    /// swallowing the user's install.
+    var onStagingHandBack: ((URL) -> Void)?
 
     private let store = QueueStore()
     private let stagingStore = StagingStore()
@@ -128,7 +132,7 @@ final class MacPackModel: ObservableObject {
                 let path = try PackagePathValidator.validatedPath(url.path)
                 let job = InstallJob(path: path, status: .staging)
                 jobs.append(job)
-                stage(jobID: job.id, sourcePath: path)
+                stage(jobID: job.id, sourcePath: path, handBackOnFailure: true)
                 accepted = true
             } catch {
                 notice = error.localizedDescription
@@ -320,7 +324,7 @@ final class MacPackModel: ObservableObject {
         )
     }
 
-    private func stage(jobID: UUID, sourcePath: String) {
+    private func stage(jobID: UUID, sourcePath: String, handBackOnFailure: Bool = false) {
         stagingQueue.async { [weak self, stagingStore] in
             do {
                 let stagedURL = try stagingStore.stage(
@@ -328,17 +332,32 @@ final class MacPackModel: ObservableObject {
                     jobID: jobID
                 )
                 DispatchQueue.main.async {
-                    self?.finishStaging(jobID: jobID, stagedPath: stagedURL.path, error: nil)
+                    self?.finishStaging(
+                        jobID: jobID,
+                        stagedPath: stagedURL.path,
+                        error: nil,
+                        handBackOnFailure: handBackOnFailure
+                    )
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.finishStaging(jobID: jobID, stagedPath: nil, error: error)
+                    self?.finishStaging(
+                        jobID: jobID,
+                        stagedPath: nil,
+                        error: error,
+                        handBackOnFailure: handBackOnFailure
+                    )
                 }
             }
         }
     }
 
-    private func finishStaging(jobID: UUID, stagedPath: String?, error: Error?) {
+    private func finishStaging(
+        jobID: UUID,
+        stagedPath: String?,
+        error: Error?,
+        handBackOnFailure: Bool
+    ) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }),
               jobs[index].status == .staging else { return }
 
@@ -346,6 +365,14 @@ final class MacPackModel: ObservableObject {
             jobs[index].path = stagedPath
             jobs[index].status = installImmediately ? .queued : .waiting
             jobs[index].message = jobs[index].status.label
+        } else if handBackOnFailure, let onStagingHandBack {
+            jobs[index].status = .failed
+            jobs[index].message = "Handed back to Installer (MacPack could not stage it)"
+            notice = "\(jobs[index].fileName) can't be staged by MacPack — opened in Installer instead."
+            persist()
+            onStagingHandBack(URL(fileURLWithPath: jobs[index].sourcePath ?? jobs[index].path))
+            settleHUDIfIdle()
+            return
         } else {
             jobs[index].status = .failed
             jobs[index].message = "Could not stage package: \(error?.localizedDescription ?? "Unknown error")"

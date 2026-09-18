@@ -175,6 +175,42 @@ do {
     print("✗ prepares unsupported-extension fixture: \(error)")
 }
 
+check(
+    PackageOrigin.isInsideForeignAppContainer(
+        "/Users/xc/Library/Containers/cc.ffitch.shottr/Data/Library/Application Support/Shottr-1.9.2.pkg",
+        homeDirectory: "/Users/xc"
+    ),
+    "defers packages inside another app's sandbox container"
+)
+check(
+    PackageOrigin.isInsideForeignAppContainer(
+        "/Users/xc/Library/Group Containers/group.com.example.shared/Update.pkg",
+        homeDirectory: "/Users/xc"
+    ),
+    "defers packages inside group containers"
+)
+check(
+    !PackageOrigin.isInsideForeignAppContainer(
+        "/Users/xc/Downloads/Example.pkg",
+        homeDirectory: "/Users/xc"
+    ),
+    "still intercepts packages in ordinary folders"
+)
+check(
+    !PackageOrigin.isInsideForeignAppContainer(
+        "/Users/xc/Library/Containers.plist.pkg",
+        homeDirectory: "/Users/xc"
+    ),
+    "does not match container-like names outside container directories"
+)
+check(
+    PackageOrigin.isInsideForeignAppContainer(
+        "/Users/xc/Library/Containers/com.example.app/Data/Update.pkg",
+        homeDirectory: "/Users/xc/"
+    ),
+    "accepts a home directory with a trailing slash"
+)
+
 if failures.isEmpty {
     print("All MacPack self-tests passed.")
     exit(EXIT_SUCCESS)
