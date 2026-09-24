@@ -24,7 +24,7 @@ final class MacPackModel: ObservableObject {
             defaults.set(showHUD, forKey: Keys.showHUD)
             if !showHUD {
                 isHUDVisible = false
-            } else if jobs.contains(where: { $0.status.isPending || $0.status == .failed }) {
+            } else if !hudDismissed, jobs.contains(where: { $0.status.isPending }) {
                 isHUDVisible = true
             }
         }
@@ -58,6 +58,9 @@ final class MacPackModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private var helperReady = false
     private var hideHUDGeneration = 0
+    /// Set when the user closes the HUD; automatic queue progress will not
+    /// bring it back until the user starts new work (enqueue/retry/approve).
+    private var hudDismissed = false
 
     init() {
         defaults.register(defaults: [
@@ -109,7 +112,7 @@ final class MacPackModel: ObservableObject {
         if launchAtLogin {
             configureLaunchAtLogin()
         }
-        if jobs.contains(where: { $0.status.isPending || $0.status == .failed }) {
+        if jobs.contains(where: { $0.status.isPending }) {
             showHUDNow()
         }
         let retainedSpoolIDs = Set(
@@ -141,7 +144,7 @@ final class MacPackModel: ObservableObject {
 
         guard accepted else { return }
         persist()
-        showHUDNow()
+        showHUDNow(userInitiated: true)
     }
 
     func approve(_ id: UUID) {
@@ -150,7 +153,7 @@ final class MacPackModel: ObservableObject {
         jobs[index].status = .queued
         jobs[index].message = "Queued"
         persist()
-        showHUDNow()
+        showHUDNow(userInitiated: true)
         startNextIfPossible()
     }
 
@@ -169,7 +172,7 @@ final class MacPackModel: ObservableObject {
             ?? jobs.endIndex
         jobs.insert(promoted, at: insertionIndex)
         persist()
-        showHUDNow()
+        showHUDNow(userInitiated: true)
         startNextIfPossible()
     }
 
@@ -201,7 +204,7 @@ final class MacPackModel: ObservableObject {
         jobs[index].message = jobs[index].status == .staging ? "Staging…" : "Queued"
         notice = nil
         persist()
-        showHUDNow()
+        showHUDNow(userInitiated: true)
         if jobs[index].status == .staging {
             stage(jobID: id, sourcePath: jobs[index].sourcePath ?? jobs[index].path)
         } else {
@@ -450,23 +453,33 @@ final class MacPackModel: ObservableObject {
         objectWillChange.send()
     }
 
-    private func showHUDNow() {
+    func dismissHUD() {
+        hudDismissed = true
         hideHUDGeneration += 1
-        if showHUD {
+        isHUDVisible = false
+    }
+
+    private func showHUDNow(userInitiated: Bool = false) {
+        if userInitiated { hudDismissed = false }
+        hideHUDGeneration += 1
+        if showHUD, !hudDismissed {
             isHUDVisible = true
         }
     }
 
     private func settleHUDIfIdle() {
         guard !jobs.contains(where: { $0.status.isPending }) else { return }
-        if jobs.last?.status == .failed {
-            isHUDVisible = showHUD
+        guard isHUDVisible else {
+            hudDismissed = false
             return
         }
 
+        // Failures linger a little longer so they can be read, but never pin
+        // the HUD on screen; the queue window keeps the full error.
+        let delay: TimeInterval = jobs.last?.status == .failed ? 6 : 2.5
         hideHUDGeneration += 1
         let generation = hideHUDGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, generation == hideHUDGeneration else { return }
             isHUDVisible = false
         }

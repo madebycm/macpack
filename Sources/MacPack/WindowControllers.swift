@@ -64,7 +64,11 @@ final class HUDWindowController {
             defer: false
         )
         newPanel.contentViewController = NSHostingController(
-            rootView: HUDView(model: model, openQueue: openQueue)
+            rootView: HUDView(
+                model: model,
+                openQueue: openQueue,
+                dismiss: { [weak model] in model?.dismissHUD() }
+            )
         )
         newPanel.level = .floating
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]

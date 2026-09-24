@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum HUDLayout {
-    static let width: CGFloat = 218
+    static let width: CGFloat = 232
     static let height: CGFloat = 40
     static let screenMargin: CGFloat = 10
     static let cornerRadius: CGFloat = 12
@@ -14,6 +14,14 @@ enum HUDLayout {
 struct HUDView: View {
     @ObservedObject var model: MacPackModel
     let openQueue: () -> Void
+    let dismiss: () -> Void
+    // Plain State storage (not the @State macro): the Command Line Tools
+    // toolchain ships without the SwiftUIMacros plugin.
+    private let hoverState = State(initialValue: false)
+    private var isHovering: Bool {
+        get { hoverState.wrappedValue }
+        nonmutating set { hoverState.wrappedValue = newValue }
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -43,8 +51,23 @@ struct HUDView: View {
                         .font(.system(size: 8, weight: .bold, design: .rounded))
                         .foregroundStyle(.tertiary)
                 }
+
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(isHovering ? .primary : .tertiary)
+                        .frame(width: 16, height: 16)
+                        .background(
+                            Circle().fill(Color.primary.opacity(isHovering ? 0.1 : 0))
+                        )
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Hide until the next install")
+                .accessibilityLabel("Dismiss")
             }
-            .padding(.horizontal, 10)
+            .padding(.leading, 10)
+            .padding(.trailing, 6)
 
             if job?.status == .installing, let progress = job?.progress {
                 GeometryReader { geometry in
@@ -80,6 +103,7 @@ struct HUDView: View {
             )
         )
         .onTapGesture(perform: openQueue)
+        .onHover { isHovering = $0 }
         .accessibilityLabel("\(primaryText), \(job?.message ?? "Ready")")
     }
 

@@ -297,7 +297,13 @@ private struct IntegrationRow: View {
 private struct JobRow: View {
     let job: InstallJob
     @ObservedObject var model: MacPackModel
-    @State private var isHovering = false
+    // Plain State storage (not the @State macro): the Command Line Tools
+    // toolchain ships without the SwiftUIMacros plugin.
+    private let hoverState = State(initialValue: false)
+    private var isHovering: Bool {
+        get { hoverState.wrappedValue }
+        nonmutating set { hoverState.wrappedValue = newValue }
+    }
 
     var body: some View {
         HStack(spacing: 11) {
