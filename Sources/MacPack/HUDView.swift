@@ -1,60 +1,120 @@
 import SwiftUI
 
+enum HUDLayout {
+    static let width: CGFloat = 232
+    static let height: CGFloat = 40
+    static let screenMargin: CGFloat = 10
+    static let cornerRadius: CGFloat = 12
+
+    static var size: CGSize {
+        CGSize(width: width, height: height)
+    }
+}
+
 struct HUDView: View {
     @ObservedObject var model: MacPackModel
     let openQueue: () -> Void
+    let dismiss: () -> Void
+    // Plain State storage (not the @State macro): the Command Line Tools
+    // toolchain ships without the SwiftUIMacros plugin.
+    private let hoverState = State(initialValue: false)
+    private var isHovering: Bool {
+        get { hoverState.wrappedValue }
+        nonmutating set { hoverState.wrappedValue = newValue }
+    }
 
     var body: some View {
-        HStack(spacing: 11) {
-            statusGlyph
+        ZStack(alignment: .bottom) {
+            HStack(spacing: 8) {
+                statusGlyph
+                    .frame(width: 14, height: 14)
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 7) {
-                    Text(job?.fileName ?? "MacPack")
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 4)
-                    if model.pendingCount > 1 {
-                        Text("+\(model.pendingCount - 1)")
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.quaternary, in: Capsule())
-                    }
-                    if let build = model.developmentBuild {
-                        Text("D\(build)")
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
-                            .foregroundStyle(.tertiary)
-                    }
+                Text(primaryText)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer(minLength: 3)
+
+                if job?.status == .installing, let progress = job?.progress {
+                    Text("\(Int((progress * 100).rounded()))%")
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                } else if model.pendingCount > 1 {
+                    Text("+\(model.pendingCount - 1)")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                } else if let build = model.developmentBuild {
+                    Text("D\(build)")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(.tertiary)
                 }
 
-                if job?.status == .installing {
-                    ProgressView(value: job?.progress)
-                        .progressViewStyle(.linear)
-                        .controlSize(.mini)
-                        .tint(.accentColor)
-                } else {
-                    Text(job?.message ?? "Ready")
-                        .font(.system(size: 10))
-                        .foregroundStyle(messageColor)
-                        .lineLimit(1)
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(isHovering ? .primary : .tertiary)
+                        .frame(width: 16, height: 16)
+                        .background(
+                            Circle().fill(Color.primary.opacity(isHovering ? 0.1 : 0))
+                        )
+                        .contentShape(Circle())
                 }
+                .buttonStyle(.plain)
+                .help("Hide until the next install")
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(.leading, 10)
+            .padding(.trailing, 6)
+
+            if job?.status == .installing, let progress = job?.progress {
+                GeometryReader { geometry in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.09))
+                        Capsule()
+                            .fill(Color.accentColor)
+                            .frame(
+                                width: max(
+                                    2,
+                                    geometry.size.width * min(max(progress, 0), 1)
+                                )
+                            )
+                    }
+                }
+                .frame(height: 2)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 3)
             }
         }
-        .padding(.horizontal, 13)
-        .frame(width: 300, height: 58)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(width: HUDLayout.width, height: HUDLayout.height)
+        .background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(
+                cornerRadius: HUDLayout.cornerRadius,
+                style: .continuous
+            )
+        )
+        .contentShape(
+            RoundedRectangle(
+                cornerRadius: HUDLayout.cornerRadius,
+                style: .continuous
+            )
+        )
         .onTapGesture(perform: openQueue)
+        .onHover { isHovering = $0 }
+        .accessibilityLabel("\(primaryText), \(job?.message ?? "Ready")")
     }
 
     private var job: InstallJob? { model.hudJob }
+
+    private var primaryText: String {
+        if job?.status == .postProcessing {
+            return job?.message ?? "Cleaning plug-in duplicates…"
+        }
+        return job?.fileName ?? "MacPack"
+    }
 
     @ViewBuilder
     private var statusGlyph: some View {
@@ -65,12 +125,15 @@ struct HUDView: View {
             Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
         case .waiting:
             Image(systemName: "pause.circle.fill").foregroundStyle(.orange)
+        case .staging, .installing, .postProcessing:
+            ProgressView()
+                .controlSize(.mini)
+        case .queued:
+            Image(systemName: "clock.fill").foregroundStyle(.secondary)
+        case .cancelled:
+            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
         default:
             Image(systemName: "shippingbox.fill").foregroundStyle(.tint)
         }
-    }
-
-    private var messageColor: Color {
-        job?.status == .failed ? .red : .secondary
     }
 }

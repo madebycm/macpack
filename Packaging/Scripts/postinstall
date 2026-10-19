@@ -14,10 +14,13 @@ label="system/com.macpack.installer"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$app"
 /usr/bin/plutil -lint "$plist"
 
-if ! /bin/launchctl print "$label" >/dev/null 2>&1; then
-    /bin/launchctl bootstrap system "$plist"
+# Reload the job on every install: a still-loaded helper otherwise keeps
+# running the old executable and signing requirement after an app update.
+if /bin/launchctl print "$label" >/dev/null 2>&1; then
+    /bin/launchctl bootout "$label"
 fi
 /bin/launchctl enable "$label"
+/bin/launchctl bootstrap system "$plist"
 
 lsregister="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 "$lsregister" -f "$app"

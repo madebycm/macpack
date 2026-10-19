@@ -24,7 +24,7 @@ final class MacPackModel: ObservableObject {
             defaults.set(showHUD, forKey: Keys.showHUD)
             if !showHUD {
                 isHUDVisible = false
-            } else if jobs.contains(where: { $0.status.isPending || $0.status == .failed }) {
+            } else if !hudDismissed, jobs.contains(where: { $0.status.isPending }) {
                 isHUDVisible = true
             }
         }
@@ -43,6 +43,10 @@ final class MacPackModel: ObservableObject {
     @Published private(set) var notice: String?
 
     var onNeedsAttention: (() -> Void)?
+    /// Called when a freshly routed package cannot be staged, so the caller
+    /// can hand the original file back to Installer.app instead of silently
+    /// swallowing the user's install.
+    var onStagingHandBack: ((URL) -> Void)?
 
     private let store = QueueStore()
     private let stagingStore = StagingStore()
@@ -53,7 +57,13 @@ final class MacPackModel: ObservableObject {
     private let helperClient = HelperClient()
     private let defaults = UserDefaults.standard
     private var helperReady = false
+    private var isCheckingHelper = false
+    private var helperRefresh: DispatchWorkItem?
+    private var helperRefreshAttemptsRemaining = 0
     private var hideHUDGeneration = 0
+    /// Set when the user closes the HUD; automatic queue progress will not
+    /// bring it back until the user starts new work (enqueue/retry/approve).
+    private var hudDismissed = false
 
     init() {
         defaults.register(defaults: [
@@ -67,7 +77,7 @@ final class MacPackModel: ObservableObject {
 
         jobs = store.load().map { job in
             var recovered = job
-            if recovered.status == .installing {
+            if recovered.status == .installing || recovered.status == .postProcessing {
                 recovered.status = .queued
                 recovered.progress = nil
                 recovered.message = "Recovered after restart"
@@ -77,7 +87,9 @@ final class MacPackModel: ObservableObject {
     }
 
     var activeJob: InstallJob? {
-        jobs.first(where: { $0.status == .installing })
+        jobs.first(where: {
+            $0.status == .installing || $0.status == .postProcessing
+        })
     }
 
     var hudJob: InstallJob? {
@@ -103,7 +115,7 @@ final class MacPackModel: ObservableObject {
         if launchAtLogin {
             configureLaunchAtLogin()
         }
-        if jobs.contains(where: { $0.status.isPending || $0.status == .failed }) {
+        if jobs.contains(where: { $0.status.isPending }) {
             showHUDNow()
         }
         let retainedSpoolIDs = Set(
@@ -126,7 +138,7 @@ final class MacPackModel: ObservableObject {
                 let path = try PackagePathValidator.validatedPath(url.path)
                 let job = InstallJob(path: path, status: .staging)
                 jobs.append(job)
-                stage(jobID: job.id, sourcePath: path)
+                stage(jobID: job.id, sourcePath: path, handBackOnFailure: true)
                 accepted = true
             } catch {
                 notice = error.localizedDescription
@@ -135,7 +147,7 @@ final class MacPackModel: ObservableObject {
 
         guard accepted else { return }
         persist()
-        showHUDNow()
+        showHUDNow(userInitiated: true)
     }
 
     func approve(_ id: UUID) {
@@ -144,7 +156,26 @@ final class MacPackModel: ObservableObject {
         jobs[index].status = .queued
         jobs[index].message = "Queued"
         persist()
-        showHUDNow()
+        showHUDNow(userInitiated: true)
+        startNextIfPossible()
+    }
+
+    func prioritize(_ id: UUID) {
+        guard let currentIndex = jobs.firstIndex(where: { $0.id == id }),
+              jobs[currentIndex].status == .queued else { return }
+
+        for index in jobs.indices
+        where jobs[index].status == .queued && jobs[index].message == "Up next" {
+            jobs[index].message = "Queued"
+        }
+
+        var promoted = jobs.remove(at: currentIndex)
+        promoted.message = "Up next"
+        let insertionIndex = jobs.firstIndex(where: { $0.status == .queued })
+            ?? jobs.endIndex
+        jobs.insert(promoted, at: insertionIndex)
+        persist()
+        showHUDNow(userInitiated: true)
         startNextIfPossible()
     }
 
@@ -176,7 +207,7 @@ final class MacPackModel: ObservableObject {
         jobs[index].message = jobs[index].status == .staging ? "Staging…" : "Queued"
         notice = nil
         persist()
-        showHUDNow()
+        showHUDNow(userInitiated: true)
         if jobs[index].status == .staging {
             stage(jobID: id, sourcePath: jobs[index].sourcePath ?? jobs[index].path)
         } else {
@@ -210,27 +241,50 @@ final class MacPackModel: ObservableObject {
     func refreshSystemState() {
         routingState = .ready
         loginItemState = SystemIntegration.loginItemState()
+        guard !isCheckingHelper else { return }
+        helperRefresh?.cancel()
+        helperRefresh = nil
+        isCheckingHelper = true
+        helperReady = false
         helperState = .checking
 
         helperClient.ping { [weak self] ready in
             guard let self else { return }
+            isCheckingHelper = false
             helperReady = ready
-            helperState = ready ? .ready : SystemIntegration.helperRegistrationState()
             if ready {
+                helperState = .ready
+                helperRefreshAttemptsRemaining = 0
                 notice = nil
                 startNextIfPossible()
+            } else {
+                let registrationState = SystemIntegration.helperRegistrationState()
+                helperState = registrationState == .ready
+                    ? .unavailable("The installer service is registered but not responding. Enable it again or reinstall MacPack.")
+                    : registrationState
+                if jobs.contains(where: { $0.status == .queued }) {
+                    notice = helperState == .needsApproval
+                        ? "Approve MacPack under Login Items to resume the waiting packages."
+                        : "Packages are waiting for the installer service. Enable it below, or reinstall MacPack to repair setup."
+                }
+                if helperRefreshAttemptsRemaining > 0 {
+                    helperRefreshAttemptsRemaining -= 1
+                    scheduleHelperRefresh()
+                }
             }
         }
     }
 
     func enableInstallerService() {
         do {
+            helperReady = false
             helperState = try SystemIntegration.registerModernHelper()
             if helperState == .needsApproval {
                 notice = "Approve MacPack under Login Items to finish one-time setup."
                 SystemIntegration.openBackgroundItemSettings()
             }
-            scheduleHelperRefresh()
+            helperRefreshAttemptsRemaining = 30
+            refreshSystemState()
         } catch {
             helperState = .unavailable(error.localizedDescription)
             notice = "Could not register the installer service: \(error.localizedDescription)"
@@ -265,15 +319,21 @@ final class MacPackModel: ObservableObject {
     }
 
     private func scheduleHelperRefresh() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+        helperRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             self?.refreshSystemState()
         }
+        helperRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
 
     private func startNextIfPossible() {
-        guard helperReady,
-              activeJob == nil,
+        guard activeJob == nil,
               let index = jobs.firstIndex(where: { $0.status == .queued }) else { return }
+        guard helperReady else {
+            refreshSystemState()
+            return
+        }
 
         let id = jobs[index].id
         jobs[index].status = .installing
@@ -285,8 +345,13 @@ final class MacPackModel: ObservableObject {
 
         helperClient.install(
             job: job,
-            progress: { [weak self] percent, message in
-                self?.updateProgress(id: id, percent: percent, message: message)
+            progress: { [weak self] stage, percent, message in
+                self?.updateProgress(
+                    id: id,
+                    stage: stage,
+                    percent: percent,
+                    message: message
+                )
             },
             completion: { [weak self] exitCode, summary in
                 self?.finish(id: id, exitCode: exitCode, summary: summary)
@@ -294,7 +359,7 @@ final class MacPackModel: ObservableObject {
         )
     }
 
-    private func stage(jobID: UUID, sourcePath: String) {
+    private func stage(jobID: UUID, sourcePath: String, handBackOnFailure: Bool = false) {
         stagingQueue.async { [weak self, stagingStore] in
             do {
                 let stagedURL = try stagingStore.stage(
@@ -302,17 +367,32 @@ final class MacPackModel: ObservableObject {
                     jobID: jobID
                 )
                 DispatchQueue.main.async {
-                    self?.finishStaging(jobID: jobID, stagedPath: stagedURL.path, error: nil)
+                    self?.finishStaging(
+                        jobID: jobID,
+                        stagedPath: stagedURL.path,
+                        error: nil,
+                        handBackOnFailure: handBackOnFailure
+                    )
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.finishStaging(jobID: jobID, stagedPath: nil, error: error)
+                    self?.finishStaging(
+                        jobID: jobID,
+                        stagedPath: nil,
+                        error: error,
+                        handBackOnFailure: handBackOnFailure
+                    )
                 }
             }
         }
     }
 
-    private func finishStaging(jobID: UUID, stagedPath: String?, error: Error?) {
+    private func finishStaging(
+        jobID: UUID,
+        stagedPath: String?,
+        error: Error?,
+        handBackOnFailure: Bool
+    ) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }),
               jobs[index].status == .staging else { return }
 
@@ -320,6 +400,14 @@ final class MacPackModel: ObservableObject {
             jobs[index].path = stagedPath
             jobs[index].status = installImmediately ? .queued : .waiting
             jobs[index].message = jobs[index].status.label
+        } else if handBackOnFailure, let onStagingHandBack {
+            jobs[index].status = .failed
+            jobs[index].message = "Handed back to Installer (MacPack could not stage it)"
+            notice = "\(jobs[index].fileName) can't be staged by MacPack — opened in Installer instead."
+            persist()
+            onStagingHandBack(URL(fileURLWithPath: jobs[index].sourcePath ?? jobs[index].path))
+            settleHUDIfIdle()
+            return
         } else {
             jobs[index].status = .failed
             jobs[index].message = "Could not stage package: \(error?.localizedDescription ?? "Unknown error")"
@@ -329,6 +417,9 @@ final class MacPackModel: ObservableObject {
 
         if jobs[index].status == .queued {
             startNextIfPossible()
+            if !helperReady {
+                onNeedsAttention?()
+            }
         } else if jobs[index].status == .waiting {
             onNeedsAttention?()
         } else {
@@ -337,9 +428,22 @@ final class MacPackModel: ObservableObject {
         }
     }
 
-    private func updateProgress(id: UUID, percent: Double?, message: String?) {
+    private func updateProgress(
+        id: UUID,
+        stage: String,
+        percent: Double?,
+        message: String?
+    ) {
         guard let index = jobs.firstIndex(where: { $0.id == id }),
-              jobs[index].status == .installing else { return }
+              jobs[index].status == .installing
+                || jobs[index].status == .postProcessing else { return }
+
+        if stage == MacPackInstallStage.postProcessing {
+            jobs[index].status = .postProcessing
+            jobs[index].progress = nil
+        } else if jobs[index].status != .postProcessing {
+            jobs[index].status = .installing
+        }
         if let percent {
             jobs[index].progress = percent
         }
@@ -354,7 +458,7 @@ final class MacPackModel: ObservableObject {
         if exitCode == 0 {
             jobs[index].status = .installed
             jobs[index].progress = 1
-            jobs[index].message = "Installed"
+            jobs[index].message = summary.isEmpty ? "Installed" : summary
             let stagedPath = jobs[index].path
             if stagingStore.contains(stagedPath) {
                 stagingQueue.async { [stagingStore] in
@@ -371,7 +475,7 @@ final class MacPackModel: ObservableObject {
 
         if exitCode != 0, exitCode == Int(EX_UNAVAILABLE) {
             helperReady = false
-            helperState = SystemIntegration.helperRegistrationState()
+            helperState = .unavailable(summary)
             onNeedsAttention?()
         }
 
@@ -384,23 +488,33 @@ final class MacPackModel: ObservableObject {
         objectWillChange.send()
     }
 
-    private func showHUDNow() {
+    func dismissHUD() {
+        hudDismissed = true
         hideHUDGeneration += 1
-        if showHUD {
+        isHUDVisible = false
+    }
+
+    private func showHUDNow(userInitiated: Bool = false) {
+        if userInitiated { hudDismissed = false }
+        hideHUDGeneration += 1
+        if showHUD, !hudDismissed {
             isHUDVisible = true
         }
     }
 
     private func settleHUDIfIdle() {
         guard !jobs.contains(where: { $0.status.isPending }) else { return }
-        if jobs.last?.status == .failed {
-            isHUDVisible = showHUD
+        guard isHUDVisible else {
+            hudDismissed = false
             return
         }
 
+        // Failures linger a little longer so they can be read, but never pin
+        // the HUD on screen; the queue window keeps the full error.
+        let delay: TimeInterval = jobs.last?.status == .failed ? 6 : 2.5
         hideHUDGeneration += 1
         let generation = hideHUDGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, generation == hideHUDGeneration else { return }
             isHUDVisible = false
         }

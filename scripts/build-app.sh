@@ -43,6 +43,18 @@ contents="$app/Contents"
     "$contents/Library/LaunchDaemons/com.macpack.installer.plist"
 /bin/cp -X "$repo_dir/Resources/ClientRequirement.txt" \
     "$contents/Resources/ClientRequirement.txt"
+if [[ -d "$repo_dir/Resources/PostHooks" ]]; then
+    forbidden_hook_artifact=$(/usr/bin/find "$repo_dir/Resources/PostHooks" \
+        \( -name '.cache' -o -name '__pycache__' -o -name '*.pyc' \) \
+        -print -quit)
+    if [[ -n "$forbidden_hook_artifact" ]]; then
+        print -u2 "refusing private/generated hook artifact: $forbidden_hook_artifact"
+        exit 65
+    fi
+    /usr/bin/ditto --norsrc --noextattr \
+        "$repo_dir/Resources/PostHooks" \
+        "$contents/Resources/PostHooks"
+fi
 /bin/chmod 0755 "$contents/MacOS/MacPack" "$contents/Library/HelperTools/MacPackInstaller"
 
 version=${MACPACK_VERSION:-0.1.0}

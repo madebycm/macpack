@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "hooks": [
+    {
+      "id": "vst-cleanup",
+      "displayName": "VST cleanup",
+      "progressMessage": "Cleaning plug-in duplicates…",
+      "phase": "afterSuccessfulInstall",
+      "runner": "python3",
+      "entrypoint": "VSTCleanup/macpack_hook.py",
+      "timeoutSeconds": 900
+    }
+  ]
+}

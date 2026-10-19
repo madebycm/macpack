@@ -297,6 +297,13 @@ private struct IntegrationRow: View {
 private struct JobRow: View {
     let job: InstallJob
     @ObservedObject var model: MacPackModel
+    // Plain State storage (not the @State macro): the Command Line Tools
+    // toolchain ships without the SwiftUIMacros plugin.
+    private let hoverState = State(initialValue: false)
+    private var isHovering: Bool {
+        get { hoverState.wrappedValue }
+        nonmutating set { hoverState.wrappedValue = newValue }
+    }
 
     var body: some View {
         HStack(spacing: 11) {
@@ -312,12 +319,12 @@ private struct JobRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Text(job.status.label)
+                    Text(statusLabel)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
 
-                if job.status == .installing {
+                if job.status == .installing || job.status == .postProcessing {
                     ProgressView(value: job.progress)
                         .progressViewStyle(.linear)
                         .controlSize(.small)
@@ -347,6 +354,30 @@ private struct JobRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .background {
+            if job.status == .queued && isHovering {
+                Color.accentColor.opacity(0.06)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if job.status == .queued {
+                model.prioritize(job.id)
+            }
+        }
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .help(job.status == .queued ? "Click to make this package next" : job.message)
+    }
+
+    private var statusLabel: String {
+        if job.status == .queued {
+            if job.message == "Up next" { return "Up next" }
+            if isHovering { return "Make next" }
+        }
+        return job.status.label
     }
 
     private var iconName: String {
@@ -355,6 +386,7 @@ private struct JobRow: View {
         case .waiting: return "pause.circle.fill"
         case .queued: return "clock.fill"
         case .installing: return "arrow.down.circle.fill"
+        case .postProcessing: return "sparkles"
         case .installed: return "checkmark.circle.fill"
         case .failed: return "exclamationmark.circle.fill"
         case .cancelled: return "xmark.circle.fill"
@@ -365,7 +397,7 @@ private struct JobRow: View {
         switch job.status {
         case .installed: return .green
         case .failed: return .red
-        case .staging, .installing: return .accentColor
+        case .staging, .installing, .postProcessing: return .accentColor
         default: return .secondary
         }
     }

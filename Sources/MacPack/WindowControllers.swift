@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import MacPackShared
 import SwiftUI
 
 @MainActor
@@ -57,13 +58,17 @@ final class HUDWindowController {
         if let panel { return panel }
 
         let newPanel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 300, height: 58),
+            contentRect: NSRect(origin: .zero, size: HUDLayout.size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         newPanel.contentViewController = NSHostingController(
-            rootView: HUDView(model: model, openQueue: openQueue)
+            rootView: HUDView(
+                model: model,
+                openQueue: openQueue,
+                dismiss: { [weak model] in model?.dismissHUD() }
+            )
         )
         newPanel.level = .floating
         newPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -80,14 +85,22 @@ final class HUDWindowController {
     }
 
     private func position() {
-        guard let panel,
-              let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        guard let panel, let screen = targetScreen else { return }
         let frame = screen.visibleFrame
-        let origin = NSPoint(
-            x: frame.maxX - panel.frame.width - 16,
-            y: frame.maxY - panel.frame.height - 14
+        let size = HUDLayout.size
+        let origin = HUDScreenPlacement.origin(
+            visibleFrame: frame,
+            windowSize: size,
+            margin: HUDLayout.screenMargin
         )
-        panel.setFrameOrigin(origin)
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
+    }
+
+    private var targetScreen: NSScreen? {
+        let mouseLocation = NSEvent.mouseLocation
+        return NSScreen.screens.first(where: {
+            NSMouseInRect(mouseLocation, $0.frame, false)
+        }) ?? panel?.screen ?? NSScreen.main ?? NSScreen.screens.first
     }
 
     private func setVisible(_ visible: Bool) {
@@ -97,6 +110,9 @@ final class HUDWindowController {
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if visible {
             panel.orderFrontRegardless()
+            DispatchQueue.main.async { [weak self] in
+                self?.position()
+            }
         }
 
         NSAnimationContext.runAnimationGroup { context in

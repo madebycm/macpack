@@ -28,10 +28,37 @@ enum InstallerRunner {
             )
         }
 
+        let installerArguments = ["-verboseR", "-pkg", validatedPath, "-target", "/"]
+        let result = invoke(
+            executablePath: "/usr/sbin/installer",
+            arguments: installerArguments,
+            progress: progress
+        )
+        guard result.exitCode != 0, shouldRetryWithRosetta(result) else {
+            return result
+        }
+
+        // Old Packages.app distributions gate on an Intel-only CPU check that
+        // fails when installer runs natively on Apple Silicon; the same package
+        // installs cleanly when installer runs as x86_64 under Rosetta.
+        progress(InstallerProgressEvent(message: "Retrying under Rosetta…"))
+        let retried = invoke(
+            executablePath: "/usr/bin/arch",
+            arguments: ["-x86_64", "/usr/sbin/installer"] + installerArguments,
+            progress: progress
+        )
+        return retried.exitCode == 0 ? retried : result
+    }
+
+    private static func invoke(
+        executablePath: String,
+        arguments: [String],
+        progress: @escaping (InstallerProgressEvent) -> Void
+    ) -> InstallerRunResult {
         let process = Process()
         let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/installer")
-        process.arguments = ["-verboseR", "-pkg", validatedPath, "-target", "/"]
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: "/")
         process.standardOutput = output
         process.standardError = output
@@ -77,6 +104,20 @@ enum InstallerRunner {
         let fallback = code == 0 ? "Installed" : "macOS Installer exited with status \(code)."
         let summary = recentLines.last(where: { !$0.isEmpty }) ?? fallback
         return InstallerRunResult(exitCode: code, summary: summary)
+    }
+
+    private static func shouldRetryWithRosetta(_ result: InstallerRunResult) -> Bool {
+        // Rosetta only exists on Apple Silicon, so this also excludes Intel Macs.
+        guard FileManager.default.fileExists(
+            atPath: "/Library/Apple/usr/share/rosetta/rosetta"
+        ) else { return false }
+
+        // Packages.app templates blank the failure message to a single space,
+        // leaving a bare "installer: Error -"; other gate failures say the
+        // package cannot be installed on this computer.
+        if result.summary == "installer: Error -" { return true }
+        if result.summary.contains("cannot be installed") { return true }
+        return false
     }
 
     private static func consumeLines(
