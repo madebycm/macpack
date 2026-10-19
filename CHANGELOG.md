@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Melodyne is protected from duplicate-format and optional broken-signature cleanup, including fresh-install VST3 cleanup.
+- Installer-service setup now registers missing embedded services, reports failed connections accurately, and reconnects waiting packages after setup, activation, or retry.
+- Package reinstalls reload the on-demand helper so updates and repairs take effect immediately.
+- Cleanup continues when Ableton's database is unreadable, preserving VST3s whose AU compatibility cannot be verified.
 - Packages inside other apps' sandbox containers (auto-updater downloads such as Shottr's) are left to Installer.app instead of being intercepted into a staging copy macOS app-data protection denies.
 - A freshly routed package whose staging still fails is handed back to Installer.app so the install proceeds normally, with a one-shot interception bypass that prevents a recapture loop.
 - Code-controlled, manifest-driven post-install hook platform with a dedicated queue phase and persistent cleanup status.

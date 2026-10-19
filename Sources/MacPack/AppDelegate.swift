@@ -33,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.enqueue(urls: urls)
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // Approval happens in System Settings. Returning to MacPack must
+        // reconnect the queue even if setup's short retry window has ended.
+        model.refreshSystemState()
+    }
+
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
         guard !suppressInitialWindow, !Self.wasLaunchedAsLoginItem else {
             return false

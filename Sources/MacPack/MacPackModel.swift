@@ -57,6 +57,9 @@ final class MacPackModel: ObservableObject {
     private let helperClient = HelperClient()
     private let defaults = UserDefaults.standard
     private var helperReady = false
+    private var isCheckingHelper = false
+    private var helperRefresh: DispatchWorkItem?
+    private var helperRefreshAttemptsRemaining = 0
     private var hideHUDGeneration = 0
     /// Set when the user closes the HUD; automatic queue progress will not
     /// bring it back until the user starts new work (enqueue/retry/approve).
@@ -238,27 +241,50 @@ final class MacPackModel: ObservableObject {
     func refreshSystemState() {
         routingState = .ready
         loginItemState = SystemIntegration.loginItemState()
+        guard !isCheckingHelper else { return }
+        helperRefresh?.cancel()
+        helperRefresh = nil
+        isCheckingHelper = true
+        helperReady = false
         helperState = .checking
 
         helperClient.ping { [weak self] ready in
             guard let self else { return }
+            isCheckingHelper = false
             helperReady = ready
-            helperState = ready ? .ready : SystemIntegration.helperRegistrationState()
             if ready {
+                helperState = .ready
+                helperRefreshAttemptsRemaining = 0
                 notice = nil
                 startNextIfPossible()
+            } else {
+                let registrationState = SystemIntegration.helperRegistrationState()
+                helperState = registrationState == .ready
+                    ? .unavailable("The installer service is registered but not responding. Enable it again or reinstall MacPack.")
+                    : registrationState
+                if jobs.contains(where: { $0.status == .queued }) {
+                    notice = helperState == .needsApproval
+                        ? "Approve MacPack under Login Items to resume the waiting packages."
+                        : "Packages are waiting for the installer service. Enable it below, or reinstall MacPack to repair setup."
+                }
+                if helperRefreshAttemptsRemaining > 0 {
+                    helperRefreshAttemptsRemaining -= 1
+                    scheduleHelperRefresh()
+                }
             }
         }
     }
 
     func enableInstallerService() {
         do {
+            helperReady = false
             helperState = try SystemIntegration.registerModernHelper()
             if helperState == .needsApproval {
                 notice = "Approve MacPack under Login Items to finish one-time setup."
                 SystemIntegration.openBackgroundItemSettings()
             }
-            scheduleHelperRefresh()
+            helperRefreshAttemptsRemaining = 30
+            refreshSystemState()
         } catch {
             helperState = .unavailable(error.localizedDescription)
             notice = "Could not register the installer service: \(error.localizedDescription)"
@@ -293,15 +319,21 @@ final class MacPackModel: ObservableObject {
     }
 
     private func scheduleHelperRefresh() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+        helperRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             self?.refreshSystemState()
         }
+        helperRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
     }
 
     private func startNextIfPossible() {
-        guard helperReady,
-              activeJob == nil,
+        guard activeJob == nil,
               let index = jobs.firstIndex(where: { $0.status == .queued }) else { return }
+        guard helperReady else {
+            refreshSystemState()
+            return
+        }
 
         let id = jobs[index].id
         jobs[index].status = .installing
@@ -385,6 +417,9 @@ final class MacPackModel: ObservableObject {
 
         if jobs[index].status == .queued {
             startNextIfPossible()
+            if !helperReady {
+                onNeedsAttention?()
+            }
         } else if jobs[index].status == .waiting {
             onNeedsAttention?()
         } else {
@@ -440,7 +475,7 @@ final class MacPackModel: ObservableObject {
 
         if exitCode != 0, exitCode == Int(EX_UNAVAILABLE) {
             helperReady = false
-            helperState = SystemIntegration.helperRegistrationState()
+            helperState = .unavailable(summary)
             onNeedsAttention?()
         }
 

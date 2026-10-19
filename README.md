@@ -62,7 +62,7 @@ The XPC service accepts only a client matching the MacPack app’s build-time de
 
 ## Built-in VST cleanup
 
-After each successful package install, MacPack runs the same cleanup logic as the project’s canonical `vst` CLI alias. The exact source snapshot is vendored under `Resources/PostHooks/VSTCleanup` and covered by checksum and behavior tests. It includes the Ableton-aware AU/VST3 matching, `vsx` protection, Stellarizer/Glitchwork/Textureloom VST3 preference, FabFilter version and Mono/SC cases, conditional Revoice Pro legacy cleanup, Waves cleanup, and Max for Live `.adv` dedup. Slow broken-code-signature scanning remains off, matching the alias default.
+After each successful package install, MacPack runs the same cleanup logic as the project’s canonical `vst` CLI alias. The exact source snapshot is vendored under `Resources/PostHooks/VSTCleanup` and covered by checksum and behavior tests. It includes the Ableton-aware AU/VST3 matching, `vsx` and Melodyne protection, Stellarizer/Glitchwork/Textureloom VST3 preference, FabFilter version and Mono/SC cases, conditional Revoice Pro legacy cleanup, Waves cleanup, and Max for Live `.adv` dedup. Slow broken-code-signature scanning remains off, matching the alias default.
 
 Fresh installs have one timing wrinkle: Ableton cannot index a plug-in before it exists. MacPack therefore reads the just-installed package’s BOM and bridges that indexing gap only when the package itself contains an exact same-stem AU+VST3 pair and the AU exists after installation. The canonical `NEVER_REMOVE` and `PREFER_VST3` exceptions still win. This lets a fresh package such as Lucid clean its VST3 immediately without weakening the cleaner’s global Ableton-aware sweep.
 
@@ -71,6 +71,8 @@ Most moved items are recoverable from `~/Library/Application Support/MacPack/Cle
 The hook also preserves the alias’s CrashReporter behavior: the login user’s `com.apple.CrashReporter DialogType` is set to `none`. Crash reports are still written normally.
 
 Hooks are code-controlled product extensions, not user commands. There is intentionally no hook editor or arbitrary-command preference. Contributors can add a typed runner and signed manifest entry; see [Architecture](docs/ARCHITECTURE.md#post-install-hooks).
+
+If Ableton's database is locked or unreadable, the hook skips database-dependent VST3 matching and continues the remaining cleanup. It keeps VST3s whose AU compatibility cannot be verified; exact AU/VST3 pairs proven by the just-installed package still use the fresh-install rule above.
 
 See [Architecture](docs/ARCHITECTURE.md) for the platform decisions and Apple references.
 
@@ -81,6 +83,16 @@ See [Architecture](docs/ARCHITECTURE.md) for the platform decisions and Apple re
 - **Start at login** — uses `SMAppService.mainApp`; MacPack remains an accessory app with no Dock/menu-bar item.
 - **Finder routing** — verify that the hidden package-open interceptor is ready.
 - **Installer service** — verify the installed service or register the modern embedded daemon when using a drag-installed, notarized build.
+
+If packages are waiting and the installer service is unavailable, reinstall MacPack with `./scripts/install-local.sh` to restore its protected helper and reload its launchd registration. For a drag-installed build, use **Enable** and approve MacPack under Login Items. The queue reconnects during setup and whenever you return to the app.
+
+To check the actual privileged connection without opening the queue or installing anything:
+
+```bash
+/Applications/MacPack.app/Contents/MacOS/MacPack --check-installer-service
+```
+
+This check reports `ready` only after the helper replies, fails within five seconds if it cannot connect, and exits with a nonzero status on failure.
 
 ## Build and verify
 

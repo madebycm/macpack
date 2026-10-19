@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import subprocess
+import sqlite3
 import sys
 import tempfile
 
@@ -231,6 +232,21 @@ def _move_fresh_vst3_pairs(vst_cleaner, packaged_pairs: set[str]):
     return moved, bytes_moved
 
 
+def _ableton_diagnostics_or_skip(diagnostics):
+    try:
+        return diagnostics()
+    except sqlite3.Error as exc:
+        return {"error": f"Live database unavailable: {exc}"}
+
+
+def _ableton_matches_or_skip(find_matches):
+    try:
+        return find_matches()
+    except sqlite3.Error as exc:
+        print(f"MacPack skipped Ableton-aware VST3 cleanup: {exc}")
+        return None, []
+
+
 def main() -> int:
     if os.geteuid() != 0:
         print("MacPack VST cleanup must run inside the root installer helper.", file=sys.stderr)
@@ -247,11 +263,20 @@ def main() -> int:
     packaged_pairs = _package_plugin_pair_stems(package_path) if package_path else set()
 
     # Keep the canonical cleaner byte-for-byte. These are the only integration
-    # overrides: recoverable storage, no password cache, and no nested sudo.
+    # overrides: recoverable storage, no password cache, no nested sudo,
+    # and skipping DB-dependent cleanup when Live's index cannot be read.
     vst_cleaner.DEFAULT_TMP_PATH = Path(recovery_path)
     vst_cleaner.CACHE_FILE = Path(recovery_path) / ".macpack-no-password-cache"
     vst_cleaner.run_with_sudo_retry = _run_root_command
     vst_cleaner.subprocess.run = _run_user_defaults
+    original_diagnostics = vst_cleaner.ableton_diagnostics
+    original_matches = vst_cleaner.find_vst3_shadowed_by_au
+    vst_cleaner.ableton_diagnostics = lambda: _ableton_diagnostics_or_skip(
+        original_diagnostics
+    )
+    vst_cleaner.find_vst3_shadowed_by_au = lambda: _ableton_matches_or_skip(
+        original_matches
+    )
 
     try:
         vst_cleaner.main()
@@ -260,6 +285,8 @@ def main() -> int:
         vst_cleaner.configure_crash_reporter(enable=False)
     finally:
         vst_cleaner.subprocess.run = _ORIGINAL_SUBPROCESS_RUN
+        vst_cleaner.ableton_diagnostics = original_diagnostics
+        vst_cleaner.find_vst3_shadowed_by_au = original_matches
         compatibility_tree.cleanup()
 
     return 0

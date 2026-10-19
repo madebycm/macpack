@@ -14,31 +14,38 @@ final class HelperClient {
     func ping(completion: @escaping (Bool) -> Void) {
         let connection = makeConnection(exportedObject: nil)
         let gate = CompletionGate()
+        let finish: (Bool) -> Void = { ready in
+            gate.run {
+                connection.invalidationHandler = nil
+                connection.interruptionHandler = nil
+                connection.invalidate()
+                DispatchQueue.main.async { completion(ready) }
+            }
+        }
 
         connection.invalidationHandler = {
-            gate.run { DispatchQueue.main.async { completion(false) } }
+            finish(false)
         }
         connection.interruptionHandler = {
-            gate.run { DispatchQueue.main.async { completion(false) } }
+            finish(false)
         }
         connection.activate()
 
+        // A registered daemon can still fail to launch or answer. Never leave
+        // service setup (and the queue behind it) stuck at "Checking…".
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            finish(false)
+        }
+
         guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in
-            gate.run {
-                connection.invalidate()
-                DispatchQueue.main.async { completion(false) }
-            }
+            finish(false)
         }) as? MacPackInstalling else {
-            connection.invalidate()
-            completion(false)
+            finish(false)
             return
         }
 
         proxy.ping { response in
-            gate.run {
-                connection.invalidate()
-                DispatchQueue.main.async { completion(response == "ready") }
-            }
+            finish(response == "ready")
         }
     }
 

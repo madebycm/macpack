@@ -46,6 +46,9 @@ enum SystemIntegration {
     static func helperRegistrationState() -> IntegrationState {
         let legacyURL = URL(fileURLWithPath: MacPackConstants.legacyPlistPath)
         if FileManager.default.fileExists(atPath: legacyURL.path) {
+            guard FileManager.default.isExecutableFile(atPath: MacPackConstants.legacyHelperPath) else {
+                return .unavailable("The installed helper is missing. Reinstall MacPack to repair it.")
+            }
             switch SMAppService.statusForLegacyPlist(at: legacyURL) {
             case .enabled: return .ready
             case .requiresApproval: return .needsApproval
@@ -60,15 +63,45 @@ enum SystemIntegration {
         case .enabled: return .ready
         case .requiresApproval: return .needsApproval
         case .notRegistered: return .notConfigured
-        case .notFound: return .unavailable("Install MacPack in /Applications first.")
+        case .notFound:
+            let embeddedHelper = Bundle.main.bundleURL.appendingPathComponent(
+                "Contents/Library/HelperTools/\(MacPackConstants.helperExecutableName)"
+            )
+            let embeddedPlist = Bundle.main.bundleURL.appendingPathComponent(
+                "Contents/Library/LaunchDaemons/\(MacPackConstants.helperPlistName)"
+            )
+            if FileManager.default.isExecutableFile(atPath: embeddedHelper.path),
+               FileManager.default.fileExists(atPath: embeddedPlist.path) {
+                return .notConfigured
+            }
+            return .unavailable("MacPack's embedded installer service is missing. Reinstall MacPack.")
         @unknown default: return .unavailable("Unknown helper state.")
         }
     }
 
     static func registerModernHelper() throws -> IntegrationState {
+        guard !FileManager.default.fileExists(atPath: MacPackConstants.legacyPlistPath) else {
+            throw NSError(
+                domain: MacPackConstants.appBundleIdentifier,
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Reinstall MacPack with its installer package to repair the installed service."]
+            )
+        }
+
         let service = SMAppService.daemon(plistName: MacPackConstants.helperPlistName)
-        if service.status == .notRegistered {
+        // A missing registration can be reported as notFound even when the
+        // embedded plist and helper exist. Enable must register in either case.
+        switch service.status {
+        case .enabled:
+            try service.unregister()
             try service.register()
+        case .notRegistered, .notFound:
+            try service.register()
+        case .requiresApproval:
+            break
+        @unknown default:
+            break
         }
         return helperRegistrationState()
     }

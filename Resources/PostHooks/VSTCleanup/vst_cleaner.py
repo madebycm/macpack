@@ -375,6 +375,7 @@ VST3_CLEANED_PATH = Path("/usr/local/vst3-cleaned")
 # ---------------------------------------------------------------------------
 NEVER_REMOVE: set[str] = {
     "vsx",
+    "melodyne",
 }
 
 # ---------------------------------------------------------------------------
@@ -1190,6 +1191,8 @@ def main():
     elif vst3_shadowed:
         dest = VST3_CLEANED_PATH
         for path in vst3_shadowed:
+            if plugin_base_name(path) in NEVER_REMOVE:
+                continue
             if not ensure_dir(dest):
                 failures.append(f"{path} -> failed to create {dest}")
                 continue
@@ -1325,6 +1328,8 @@ def main():
     broken_dest = tmp_base / "Broken_Codesign"
     if remove_broken:
         for path, reason in find_broken_codesign(all_plugin_dirs):
+            if plugin_base_name(path) in NEVER_REMOVE:
+                continue
             if not ensure_dir(broken_dest):
                 continue
             size = get_size(path)
